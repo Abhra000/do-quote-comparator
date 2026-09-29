@@ -264,7 +264,7 @@ dialog::backdrop{background:rgba(10,25,45,.45)}
 
     <details class="card layouts" id="layoutsBox">
       <summary><h2>Insurer layouts</h2><span class="lcount" id="layoutCount"></span></summary>
-      <p class="help" style="margin:0">Built in (8): ICICI Lombard, Bajaj General, Tata AIG, HDFC ERGO, Zurich Kotak, SBI General, Raheja QBE, IFFCO-Tokio. Layouts you teach are saved on this computer and used automatically for that insurer's next quote.</p>
+      <p class="help" style="margin:0">Built in (9): ICICI Lombard, Bajaj General, Tata AIG, HDFC ERGO (D&amp;O Quote Sheet), HDFC ERGO (Signature Management Liability), Zurich Kotak, SBI General, Raheja QBE, IFFCO-Tokio. Layouts you teach are saved on this computer and used automatically for that insurer's next quote.</p>
       <div class="llist" id="layoutList"></div>
       <div class="lacts">
         <button class="btn" id="btnExportLayouts" type="button">Export layouts</button>
@@ -474,6 +474,7 @@ function detect(t) {
   if (/Bajaj (General|Allianz)/i.test(t) && /QUOTE SLIP/i.test(t)) return "bajaj";
   if (/TATA AIG/i.test(t) && /QUOTE SHEET/i.test(t) && /POLICY HOLDER/i.test(t)) return "tata";
   if (/HDFC ERGO/i.test(t) && /Quote Sheet/i.test(t) && /INSURED:/i.test(t)) return "hdfc";
+  if (/HDFC ERGO/i.test(t) && /Signature Management Liability/i.test(t) && /Quote No\./i.test(t)) return "hdfcsig";
   if (/ZKGI|Zurich Kotak/i.test(t) && /LIABILITY PROTECT POLICY/i.test(t)) return "zurich";
   if (/SBI General/i.test(t) && /QUOTATION\s*-\s*DIRECTORS AND OFFICERS/i.test(t)) return "sbi";
   if (/RAHEJA QBE/i.test(t) && /Limit of Indemnity/i.test(t)) return "raheja";
@@ -573,7 +574,7 @@ function bajaj(t) {
   v.insuring_clauses = cov ? cov.replace(/^\s*Coverage\s+/, "").replace(/\(Claims-Made Basis\)/i, "").replace(/\n/g, "; ").replace(/;\s*$/, "").trim() + (/1\.3/.test(cov) ? "" : " (Entity Securities not covered)") : null;
   const cr = get(t, /Limit of Liability\s*:\s*(?:Option 1:)?\s*INR\s*([\d.]+)\s*CR/i);
   const lol = cr ? num(cr) * 1e7 : num(get(t, /Limit of Liability\s*:.*?INR\s*([\d,]+)/i));
-  const premium = num(get(t, /Annual Premium\s+(?:Option 1:)?\s*([\d,]+)/i));
+  const premium = num(get(t, /Annual Premium\s*:?\s*(?:Option 1:)?\s*(?:INR|Rs\.?|₹)?\s*([\d,]+)/i));
   // retentions
   const ret = between(t, /Retention \//i, /Retroactive Date|Protected Excess/i);
   const DO = get(ret, /Directors & Officers\s*:\s*(\S+)/i); v.directors_officers_1_1 = DO && /nil/i.test(DO) ? "Nil" : DO;
@@ -660,7 +661,7 @@ function fixNums(t) {                 // "INR 1 , 0 0 0,000" -> "INR 1,000,000";
 function limText(s, lol) {            // "Policy Limit" / "50% Policy Limit" / "10% of LOL" / "INR 5,000,000"
   s = (s || "").trim();
   let m = s.match(/(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(?:Policy Limits?|LOL|LOI|limit)/i); if (m) return pctOfLoi(+m[1], lol);
-  if (/Policy Limits?|full limits?|limit of indemnity|Up to limit/i.test(s)) return "Full limit";
+  if (/Policy Limits?|full limits?|limit of indemnity|Up ?to limit|Up ?to LO[IL]\b/i.test(s)) return "Full limit (up to LOI)";
   m = s.match(/INR\s*([\d,]+)/i); if (m) return inr(num(m[1]));
   return s || null;
 }
@@ -827,6 +828,111 @@ function hdfc(t) {
   return { insurer: "HDFC ERGO", insured, lol, premium, values: v, extraIssues: iss };
 }
 
+/* ---------- HDFC ERGO "Signature Management Liability" system quotation ---------- */
+function hdfcsig(t) {
+  const v = {}, iss = [];
+  const noFoot = t.replace(/Registered & Corporate Office:[\s\S]*?IRDAI Reg No\. ?146\./g, "")
+                  .replace(/--- page \d+ ---\n?/g, "")
+                  .replace(/HDFC ERGO General Insurance Company Limited\n/g, "")
+                  .replace(/Quote No\. \S+\n/g, "");
+  const insured = get(t, /Policy End Date[^\n]*\n([^\n]+)\nSource/i) || get(t, /\n([^\n]*(?:Limited|Ltd\.?|LLP|Private)[^\n]*)\nSource/i);
+  v.quote_reference_no = get(t, /Quote No\.\s*(\S+)/i);
+  v.quote_date = date(get(t, /Quotation Date\s*(\d{1,2}\/\d{1,2}\/\d{4})/i));
+  const ps = get(t, /Policy Start Date\s*(\d{1,2}\/\d{1,2}\/\d{4})/i), pe = get(t, /Policy End Date\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (ps && pe) v.period_of_insurance = date(ps) + " to " + date(pe);
+  const vt = get(t, /quote is valid\s*(\d{1,2}\/\d{1,2}\/\d{4})/i); if (vt) v.quote_valid_till = date(vt);
+  v.policy_type = "Claims made";
+  v.policy_wording = get(t, /Quotation for (HDFC ERGO [^\n]+)/i) || "HDFC ERGO Signature Management Liability Insurance";
+  v.nature_of_business_activities = get(t, /Industry Type\s*:\s*(.+)/i);
+  const to = get(t, /\nTurnover\s*:\s*₹?\s*([\d,]+)/i); if (to) v.estimated_turnover = inr(num(to));
+  const pd = get(t, /Pending Prior Date\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i); if (pd) v.continuity_pending_litigation_date = date(pd);
+  v.territory = get(t, /\nTerritory\s*:\s*(.+)/i);
+  v.jurisdiction = get(t, /\nJurisdiction\s*:\s*(.+)/i);
+
+  // limit of liability + premium (the "Premium Summary" block is the authority; page 1 table is the fallback)
+  const lol = num(get(t, /Side A\s*Nil\s*\n₹\s*([\d,]+)/i))
+           || num(get(t, /Insurance Plan[^\n]*\n[^\n]*₹\s*([\d,]+)\.\d\d\s*₹/i));
+  const premium = num(get(t, /Premium Summary\s*\nPremium\s*₹\s*([\d,]+)/i))
+               || num(get(t, /Insurance Plan[^\n]*\n[^\n]*₹\s*[\d,]+\.\d\d\s*₹\s*([\d,]+)/i));
+
+  // deductibles
+  if (/Side A\s*Nil/i.test(t)) v.directors_officers_1_1 = "Nil";
+  const sideB = between(t, /Side B/i, /Entity Securities/i).replace(/\n/g, " ");
+  const bi = num(get(sideB, /INR\s*([\d,]+)\s*for\s*India/i)), br = num(get(sideB, /INR\s*([\d,]+)\s*for\s*ROW/i));
+  if (bi != null) v.company_reimbursement_india = ded(bi);
+  if (br != null) { v.company_reimbursement_row = ded(br); v.company_reimbursement_usa_canada = ded(br) + " (ROW retention applies)"; }
+  const es = num(get(between(t, /Entity Securities/i, /Entity EPLI/i).replace(/\n/g, " "), /INR\s*([\d.]+)\s*Lacs?/i));
+  if (es != null) v.entity_securities_1_3_india_row_usa = "Deductible " + ded(es * 1e5) + " each and every claim";
+  const ei = num(get(between(t, /Entity EPLI India/i, /\nCovers/i).replace(/\n/g, " "), /INR\s*([\d.]+)\s*Lacs?/i));
+  if (ei != null) { v.epli_india = ded(ei * 1e5); v.epli_row = "NA (EPLI India only)"; }
+  v.insuring_clauses = "Side A (D&O); Side B (Company Reimbursement); Entity Securities; Entity EPLI";
+
+  // "Covers" sub-limit table
+  const covers = between(t, /\nCovers\s*\nName\s+Sub Limits/i, /\nEndorsements/i);
+  const C = re => { const l = covers.split("\n").find(x => re.test(x)); return l ? limText(l.replace(re, "").trim(), lol) : null; };
+  v.pollution_defence_costs = C(/Pollution Defence Cost/i);
+  v.public_relation_cost = (x => x ? x + " (Prosecution & Reputation Protection Costs)" : null)(C(/Prosecution and Reputation Protection Costs/i));
+  v.legal_representation_investigation_cost = C(/Legal representation cost/i);
+  v.legal_representation_cost = v.legal_representation_investigation_cost;
+
+  // the two numbered lists (Endorsements, then Clauses/Warranties/Exclusions) – join wrapped lines
+  const block = between(noFoot, /\nEndorsements\n/i, /\nPremium Summary/i)
+    .replace(/\n(?!\s*\d{1,2}[ .]|\s*•)/g, " ");
+  const items = block.split("\n").map(x => x.replace(/^\s*\d{1,2}[ .]\s*/, "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  const E = re => items.find(x => re.test(x));
+  const pcts = s => { const m = (s || "").match(/(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?LO[IL]/i); return m ? pctOfLoi(+m[1], lol) : null; };
+  const upto = s => /upto LO[IL]|up to LO[IL]|upto LOL/i.test(s || "") ? "Full limit (up to LOI)" : null;
+  const cov = (s, extra) => (pcts(s) || upto(s) || "Covered") + (extra ? " " + extra : "");
+  let x;
+  if ((x = E(/Retired Directors/i))) v.discovery_period_for_retired_directors = /life ?time/i.test(x) ? "Lifetime" : "Covered";
+  if (E(/Order of Payment/i)) v.order_of_payment_allocation_clause = "Covered (as per form)";
+  if ((x = E(/Occupational Health and safety/i))) v.osha_cover = "OSH defence costs covered (as per form)";
+  if ((x = E(/Civil fines and penalties/i))) v.civil_fines_penalties = "Covered, wherever insurable by law";
+  if ((x = E(/Emergency cost/i))) v.emergency_costs = cov(x);
+  if ((x = E(/FCPA|Bribery Act/i))) v.foreign_corrupt_practices_act_fcpa_uk_br = cov(x);
+  if (E(/Interpretive counsel/i)) v.interpretive_counsel_cover = "Covered (as per form)";
+  if (E(/Corporate manslaughter/i)) v.corporate_manslaughter_cover = "Covered (as per form)";
+  if (E(/Asset and liberty/i)) v.asset_liberty_costs = "Covered (as per form)";
+  if ((x = E(/Public Relation expenses/i))) v.public_relation_cost = v.public_relation_cost || cov(x);
+  if (E(/Non Cancellation Clause/i)) { v.non_cancellation_clause = "Non-cancellable except for non-payment of premium"; v.cancellation_of_policy = v.non_cancellation_clause; }
+  if (E(/Employed Lawyer/i)) v.employed_lawyers = "Covered";
+  if (E(/Extradition Costs/i)) v.extradition_costs = "Covered (as per form)";
+  if (E(/Advancement of Defence Costs/i)) v.advance_defence_cost = "Covered (as per form)";
+  if (E(/Control Group Clause/i)) v.control_group_clause_knowledge_of_occure = "Covered";
+  if (E(/Outside directorship/i)) v.outside_directorship = "Covered (as per policy form)";
+  if ((x = E(/Employment practices entity sub-?limit/i))) {
+    v.entity_epli = (upto(x) || "Covered") + " – India";
+    const d = num(get(x, /deductibles? of INR\s*([\d,]+)/i)); if (d != null) v.epli_india = ded(d);
+    v.epli_row = v.epli_row || "NA (EPLI India only)";
+  }
+  if ((x = E(/Bilateral extended reporting period/i))) v.extended_reporting_period = x.replace(/^.*?period\s*/i, "").replace(/NIL AP/i, "no additional premium").replace(/(\d+)%\s*AP/i, "$1% additional premium").replace(/\s*-\s*as per form\s*$/i, "");
+  if ((x = E(/Crisis Expenses/i))) v.crisis_expenses = cov(x);
+  if ((x = E(/Dedicated Additional Limit of Liability/i))) v.special_excess_protection_for_non_execut = (pcts(x) || "Covered") + " (dedicated additional limit for directors)";
+  if ((x = E(/Insured Person Tax Liability/i))) v.tax_liability_cover = cov(x);
+  if ((x = E(/Pollution defence costs/i))) v.pollution_defence_costs = v.pollution_defence_costs || pcts(x);
+  if ((x = E(/Kidnap Response/i))) v.kidnap_response_cover = pcts(x) || "Covered";
+  if ((x = E(/Counselling Services/i))) v.counselling_expenses = pcts(x) || "Covered";
+  if ((x = E(/Pre-?Investigation Expenses/i))) v.self_report_investigation_cost = "Pre-investigation expenses: " + (pcts(x) || "Covered");
+  if ((x = E(/Mitigation Cost/i))) v.mitigation_costs = pcts(x) || "Covered";
+  if ((x = E(/Majority Shareholder/i))) v.major_shareholder_exclusion = get(x, /(\d{1,2}\s?%)/) || null;
+  if ((x = E(/Auto acquisition of subsidiaries/i))) v.automatic_acquisition_of_new_subsidiarie = (get(x, /(\d+\s?%)/) || "Covered") + " (non US/Canada and non financial institution)";
+  if ((x = E(/Court attendance/i))) v.court_attendance_costs = x.replace(/^Endorsement\s*-\s*/i, "");
+  if ((x = E(/Future offering of Securities/i))) v.new_offering_of_securities = x.replace(/^Exclusion\s*-\s*/i, "");
+
+  // exclusions and subjectivities
+  const isExcl = /^(Exclusion|Endorsement)\b.*\b(Exclusion|excluded)\b/i;
+  v.specific_exclusions = items.filter(y => /^Exclusion\b/i.test(y) || isExcl.test(y) || /^Endorsement\s*-\s*(PFAS|Sanction|Parent Company|Financial Insolvency)/i.test(y))
+    .map(y => y.replace(/^(Endorsement|Exclusion)\s*[-–]?\s*/i, "").replace(/\s*[-–]\s*(Amended with carve backs|applicable for.*|For Manufacturing.*|for Construction.*)$/i, "").trim())
+    .filter(Boolean).join("; ") || null;
+  const subj = items.filter(y => /^(Subject|Warranty|Applicant|There (are|has|have)|During the last|Networth|Arbitration Opted)/i.test(y))
+    .concat((block.match(/•[^\n•]+/g) || []).map(y => y.replace(/^•\s*/, "").trim()));
+  v.subjectivities = [...new Set(subj)].join("; ") || null;
+
+  v.insured_name = insured;
+  if (lol == null) iss.push("Limit of liability could not be read from the limits table – check it.");
+  return { insurer: "HDFC ERGO", insured, lol, premium, values: v, extraIssues: iss };
+}
+
 
 /* ---------- Zurich Kotak (ZKGI) quote slip ---------- */
 function zurich(t) {
@@ -841,8 +947,9 @@ function zurich(t) {
   v.policy_type = "Claims made"; v.policy_wording = get(t, /(DIRECTORS AND OFFICERS LIABILITY PROTECT POLICY)/i);
   const opt = [...t.matchAll(/Option (I{1,3}):\s*INR\s*([\d,]+)\s*\+\s*taxes/gi)].map(m => ({ n: m[1], p: num(m[2]) }));
   const lims = [...t.matchAll(/Option (I{1,3})\s*1\.2\s*INR\s*([\d,]+)/gi)].map(m => ({ n: m[1], l: num(m[2]) }));
-  const lol = lims.length ? lims[0].l : num(get(t, /1\.1\s*INR\s*([\d,]+) per claim/i));
-  const premium = opt.length ? opt[0].p : null;
+  const oI = opt.find(o => o.n === "I") || opt[0], lI = lims.find(o => o.n === "I") || lims[0];
+  const lol = lI ? lI.l : num(get(t, /1\.1\s*INR\s*([\d,]+) per claim/i));
+  const premium = oI ? oI.p : null;
   if (opt.length > 1) iss.push("Quote has " + opt.length + " options; Option I is shown. " + opt.slice(1).map((o, i) => `Option ${o.n}: ${inr(lims[i + 1] ? lims[i + 1].l : null) || "?"} at ${ded(o.p)}`).join("; ") + ".");
   const secOpt = num(get(t, /Option I\s*1\.3\s*INR\s*([\d,]+)/i));
   v.insuring_clauses = `1.1 Insured Person; 1.2 Company Reimbursement; 1.3 Securities Claims${secOpt ? " – " + inr(secOpt) : ""}`;
@@ -977,9 +1084,12 @@ function raheja(t) {
   v.period_of_insurance = get(t, /Policy Period\s+(.+)/i);
   v.policy_type = "Claims made";
   const ter = get(t, /Territory \/?Jurisdiction\s+(.+)/i); if (ter) { v.territory = ter; v.jurisdiction = ter; }
-  const opts = [...t.matchAll(/Option (\d):\s*INR\s*([\d,]+) per occurrence/gi)].map(m => ({ n: +m[1], l: num(m[2]) }));
-  const prem = [...t.matchAll(/Option (\d):\s*INR\s*([\d,]+)\s*\+?\s*GST/gi)].map(m => ({ n: +m[1], p: num(m[2]) }));
-  const lol = opts.length ? opts[0].l : null, premium = prem.length ? prem[0].p : null;
+  const opts = [...t.matchAll(/Opt\s?ion\s*(\d):\s*INR\s*([\d,]+) per occurrence/gi)].map(m => ({ n: +m[1], l: num(m[2]) }));
+  const prem = [...t.matchAll(/Opt\s?ion\s*(\d):\s*INR\s*([\d,]+)\s*\+?\s*GST/gi)].map(m => ({ n: +m[1], p: num(m[2]) }));
+  // always quote Option 1, whichever order the PDF reader hands the lines over in
+  const o1 = opts.find(o => o.n === 1) || opts[0], p1 = prem.find(o => o.n === 1) || prem[0];
+  const lol = o1 ? o1.l : null, premium = p1 ? p1.p : null;
+  if (opts.length && !opts.some(o => o.n === 1)) iss.push("Option 1's limit could not be read from this PDF – the limit shown is Option " + opts[0].n + ". Please check.");
   if (opts.length > 1) iss.push("Quote has " + opts.length + " limit options; Option 1 is shown. " + opts.slice(1).map(o => { const p = prem.find(x => x.n === o.n); return `Option ${o.n}: ${inr(o.l)}${p ? " at " + ded(p.p) : ""}` }).join("; ") + ".");
   v.retroactive_date = get(t, /Retroactive Date\s+(.+)/i);
   v.directors_officers_1_1 = /Contract 1\.1:\s*Nil/i.test(t) ? "Nil" : null;
@@ -1106,8 +1216,9 @@ function generic(t) {
 }
 
 function extract(rawText) {
-  const t = clean(rawText), kind = detect(t);
-  const r = kind === "icici" ? icici(t) : kind === "bajaj" ? bajaj(t) : kind === "tata" ? tata(t) : kind === "hdfc" ? hdfc(t) : kind === "zurich" ? zurich(t) : kind === "sbi" ? sbi(t) : kind === "raheja" ? raheja(t) : kind === "iffco" ? iffco(t) : generic(t);
+  // digits split apart by the PDF reader ("INR 2 5000") are rejoined for every layout, not just Tata
+  const t = fixNums(clean(rawText)), kind = detect(t);
+  const r = kind === "icici" ? icici(t) : kind === "bajaj" ? bajaj(t) : kind === "tata" ? tata(t) : kind === "hdfc" ? hdfc(t) : kind === "hdfcsig" ? hdfcsig(t) : kind === "zurich" ? zurich(t) : kind === "sbi" ? sbi(t) : kind === "raheja" ? raheja(t) : kind === "iffco" ? iffco(t) : generic(t);
   for (const k of Object.keys(r.values)) if (r.values[k] == null || r.values[k] === "") delete r.values[k];
   r.format = kind;
   const iss = [];
@@ -1471,7 +1582,7 @@ const norm=s=>String(s||"").toLowerCase().replace(/\b(private|pvt|p|limited|ltd|
 function otherCompany(q){if(!q.insured||!state.client.name)return false;const a=norm(q.insured),b=norm(state.client.name);return a&&b&&!a.includes(b)&&!b.includes(a)}
 
 /* ---------- step 1 ---------- */
-const FMT={learned:"Read using your taught layout",zurich:"Read using the Zurich Kotak layout",sbi:"Read using the SBI General layout",raheja:"Read using the Raheja QBE layout",iffco:"Read using the IFFCO-Tokio layout",icici:"Read using the ICICI Lombard layout",bajaj:"Read using the Bajaj General layout",tata:"Read using the Tata AIG layout",hdfc:"Read using the HDFC ERGO layout",generic:"Layout not recognised – please check every value",manual:"Typed in by hand"};
+const FMT={learned:"Read using your taught layout",zurich:"Read using the Zurich Kotak layout",sbi:"Read using the SBI General layout",raheja:"Read using the Raheja QBE layout",iffco:"Read using the IFFCO-Tokio layout",icici:"Read using the ICICI Lombard layout",bajaj:"Read using the Bajaj General layout",tata:"Read using the Tata AIG layout",hdfc:"Read using the HDFC ERGO layout",hdfcsig:"Read using the HDFC ERGO Signature layout",generic:"Layout not recognised – please check every value",manual:"Typed in by hand"};
 function renderFiles(){
   $("#files").innerHTML=state.quotes.map(q=>{
     const icon=q.status==="ready"?'<path d="M5 12.5l4.5 4.5L19 7.5"/>':q.status==="error"?'<path d="M12 7v6M12 16.5v.5"/><circle cx="12" cy="12" r="9"/>':'<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>';
